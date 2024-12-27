@@ -1,46 +1,11 @@
 """
 All the objects used in the project.
 """
-from socket import socket, AF_INET, SOCK_STREAM
+
 from queue import PriorityQueue
 from multiprocessing.managers import SyncManager
 
-from requests import request, Response
-
-from constants import Priority
-from utils import DillProcess, listener, pooler
-
-
-class APIJob:
-    """
-    A class to represent the API call (the job object). Processes will send objects of this class to be processed by the APIHandler.
-    """
-
-    def __init__(self) -> None:
-
-        """
-        Initialize the API job.
-        """
-
-        self.method = None
-
-        self.url = None
-
-        self.timeout: tuple[int] = None
-
-        self.headers = {}
-
-        self.payload = {}
-
-        self.priority = Priority()
-
-    def call(self) -> Response:
-
-        """
-        Make the API call through the requests library and return the response.
-        """
-
-        return request(method=self.method, url=self.url, timeout=self.timeout, headers=self.headers, data=self.payload)
+from utils import DillProcess, listener, pooler, dispatcher, broadcaster
 
 class Manager(SyncManager):
     """
@@ -61,11 +26,9 @@ class APIHandler:
 
         self.job_queue = self.manager.PriorityQueue()
 
-        self.process_pool = self.manager.dict()
+        self.frequency_dict = self.manager.dict({"pooler":1.0, "dispatcher":1.0})
 
-        self.process_job_queue = self.manager.dict()
-
-        self.broadcast_pool = self.manager.list()
+        self.broadcast_pool = self.manager.Queue()
 
         self.statistics = self.manager.dict()
 
@@ -73,13 +36,25 @@ class APIHandler:
 
         self.port = port
 
-        self.listener = DillProcess(target=listener, args=(1, self.host, self.port, self.connection_pool, self.process_pool))
+        self.listener = DillProcess(target=listener, args=(self.host, self.port, self.connection_pool))
 
         self.listener.start()
 
-        self.pooler = DillProcess(target=pooler, args=(1, self.connection_pool, self.job_queue))
+        self.pooler = DillProcess(target=pooler, args=(self.frequency_dict, self.connection_pool, self.job_queue))
 
         self.pooler.start()
+
+        self.dispatcher = DillProcess(target=dispatcher, args=(self.frequency_dict, self.job_queue, self.broadcast_pool))
+
+        self.dispatcher.start()
+
+        self.broadcaster = DillProcess(target=broadcaster, args=(self.broadcast_pool, self.connection_pool))
+
+        self.broadcaster.start()
+
+        self.broadcaster.join()
+
+        self.dispatcher.join()
 
         self.pooler.join()
 
