@@ -6,6 +6,7 @@ from multiprocessing import Process, Pipe
 from time import sleep
 from socket import error, socket, AF_INET, SOCK_STREAM
 import errno
+from queue import Empty
 
 import dill
 
@@ -81,30 +82,27 @@ def decode_object(socket: any) -> any:
 
     try:
 
-        try:
+        header_size = 30
 
-            header_size = 30
+        #bytes is a string of bytes that is a pickled object.
 
-            #bytes is a string of bytes that is a pickled object.
+        header = socket.recv(header_size)
 
-            header = socket.recv(header_size)
+        header = header.decode("utf-8").strip()
 
-            message_length = int(header.decode("utf-8").strip())
+        if header != "":
+            message_length = int(header)
 
             return dill.loads(socket.recv(message_length))
-        
-        except error as e:
-                    
-            if e.errno == errno.EAGAIN or e.errno == errno.EWOULDBLOCK:
+    
+    except error as e:
+                
+        if e.errno == errno.EAGAIN or e.errno == errno.EWOULDBLOCK:
 
-                return None
-
-    except Exception as e:
-
-        print(e)
-
+            pass
+    
     return None
-        
+
 def encode_object(data: any) -> bytes:
 
     """
@@ -125,7 +123,7 @@ def pooler(frequency_dict, connection_pool, job_queue) -> None:
     A function to pool APIJob objects from the connections and add them to the job queue.
     """
 
-    while True: #cycle(frequency_dict["pooler"]):
+    while cycle(frequency_dict["pooler"]):
 
         for i in connection_pool.keys():
 
@@ -159,7 +157,7 @@ def pooler(frequency_dict, connection_pool, job_queue) -> None:
                 job_queue.put(Job(job, i))
 
 #TODO: Implement rate limiting and statistics
-def dispatcher(frequency_dict, job_queue, broadcast_pool) -> None:
+def dispatcher(statistics, frequency_dict, job_queue, broadcast_pool) -> None:
 
     """
     A function to dispatch the jobs to the respective processes.
@@ -174,10 +172,12 @@ def dispatcher(frequency_dict, job_queue, broadcast_pool) -> None:
     #contains the processes that have been closed via a close packet and need to be closed for the future
     to_close, garbage_counter, garbage_collection_threshhold = [], 0, 10
 
-    
+    #the list to detect hits and misses to the queue and to adjust frequency dynamically
+    frequency, buffer_length, buffer = frequency_dict.get("dispatcher"), statistics.get("buffer_length").get("dispatcher"), []
 
-    while cycle(frequency_dict["dispatcher"]):
+    while cycle(frequency):
 
+        
         #check if the garbage collection threshold has been reached
         if garbage_counter >= garbage_collection_threshhold:
 
@@ -190,20 +190,23 @@ def dispatcher(frequency_dict, job_queue, broadcast_pool) -> None:
 
                     process.close()
 
-                    print("closed process.")
-
                 else:
 
                     new_to_close.append(process)
 
             to_close = new_to_close
-            
-            print("got new garbage" + str(to_close))
+           
             garbage_counter = 0
 
         #get a job from the job_queue
-        job: Job = job_queue.get()
-        print("got job")
+
+        try:
+
+            job: Job = job_queue.get(block=False)
+
+        except Empty:
+
+            continue
 
         client_id = job.client_id
 
@@ -227,29 +230,36 @@ def dispatcher(frequency_dict, job_queue, broadcast_pool) -> None:
             #append the write end to the pipe pool
             pipe_pool[client_id] = write_end
 
-        #send the job
-        print("jp: " + str(job.job.priority.group_priority * 10 + job.job.priority.internal_priority) + " cid: " + str(client_id))
-        write_end = pipe_pool[client_id]
 
-        write_end.send(job)
-        
         if isinstance(job.job, Signal): #TODO: check if the signal is of type close
-            #send the signal to the respective process through the write_end of the pipe connected to it
+
+            if job.job.signal == Signals.close:
+               
+                #send the signal to the respective process through the write_end of the pipe connected to it
+                write_end = pipe_pool[client_id]
+
+                write_end.send(job)
+        
+                #add the process to the to_close list
+                to_close.append(process_pool[client_id])
+
+                #remove the process from the process pool
+                process_pool.pop(client_id)
+
+                #close the write_end of the pipe and remove it from the pipe_pool
+                write_end = pipe_pool[client_id]
+
+                write_end.close()
+
+                pipe_pool.pop(client_id)
+
+        else: #object is of type job
             
-            #add the process to the to_close list
-            to_close.append(process_pool[client_id])
-
-            print(to_close)
-            #remove the process from the process pool
-            process_pool.pop(client_id)
-
-            #close the write_end of the pipe and remove it from the pipe_pool
+            #send the job
             write_end = pipe_pool[client_id]
 
-            write_end.close()
-
-            pipe_pool.pop(client_id)
-
+            write_end.send(job)
+        
         garbage_counter += 1
 
 def worker(read_end, broadcast_pool) -> None:
@@ -291,7 +301,13 @@ def broadcaster(broadcast_pool, connection_pool) -> None:
 
     while True:
 
-        data = broadcast_pool.get()
+        try:
+
+            data = broadcast_pool.get()
+
+        except Empty:
+
+            continue
 
         #check if object is of type Status
         if isinstance(data, Status):
@@ -300,7 +316,7 @@ def broadcaster(broadcast_pool, connection_pool) -> None:
             if data.details.state == States.closed_connection:
                 
                 #send the close packet to the client
-                connection_pool[data.client_id].send(encode_object(data.details))
+                #connection_pool[data.client_id].send(encode_object(data.details))
 
                 #remove the connection from the connection pool
                 connection_pool.pop(data.client_id)
@@ -309,4 +325,5 @@ def broadcaster(broadcast_pool, connection_pool) -> None:
         else:
 
             #send the result to the client (it must be of type Result)
-            connection_pool[data.client_id].send(encode_object(data.result))
+            connection_pool.get(data.client_id).send(encode_object(data.result))
+

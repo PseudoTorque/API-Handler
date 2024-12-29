@@ -26,11 +26,11 @@ class APIHandler:
 
         self.job_queue = self.manager.PriorityQueue()
 
-        self.frequency_dict = self.manager.dict({"pooler":1.0, "dispatcher":1.0})
+        self.frequency_dict = self.manager.dict({"pooler":50.0, "dispatcher":1.0})
 
         self.broadcast_pool = self.manager.Queue()
 
-        self.statistics = self.manager.dict()
+        self.statistics = self.manager.dict({"buffer_length":{"pooler":50, "dispatcher":10}})
 
         self.host = host
 
@@ -44,11 +44,11 @@ class APIHandler:
 
         self.pooler.start()
 
-        self.dispatcher = DillProcess(target=dispatcher, args=(self.frequency_dict, self.job_queue, self.broadcast_pool))
+        self.dispatcher = DillProcess(target=dispatcher, args=(self.statistics, self.frequency_dict, self.job_queue, self.broadcast_pool))
 
         self.dispatcher.start()
 
-        self.broadcaster = DillProcess(target=broadcaster, args=(self.broadcast_pool, self.connection_pool))
+        self.broadcaster = DillProcess(target=broadcaster, args=(self.frequency_dict, self.broadcast_pool, self.connection_pool))
 
         self.broadcaster.start()
 

@@ -134,7 +134,8 @@ class APIJob:
         """
         Initialize the API job.
         """
-
+        self.id = None
+        
         self.method = None
 
         self.url = None
@@ -153,7 +154,7 @@ class APIJob:
         Make the API call through the requests library and return the response.
         """
 
-        return request(method=self.method, url=self.url, timeout=self.timeout, headers=self.headers, data=self.payload)
+        return (self.id, request(method=self.method, url=self.url, timeout=self.timeout, headers=self.headers, data=self.payload))
     
 class Signals:
 

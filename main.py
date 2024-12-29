@@ -21,7 +21,6 @@ if __name__ == "__main__":
 
         if c == "close":
             socket.send(encode_object(Signal(Signals.close, SignalPriorities.close)))
-            print(decode_object(socket))
             socket.close()
             break
 
