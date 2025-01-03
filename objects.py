@@ -5,7 +5,7 @@ All the constants used in the project.
 from functools import total_ordering
 import time
 from requests import request, Response
-        
+
 class PriorityPreset:
 
         """
@@ -71,7 +71,7 @@ class Priority:
         Check if the priority is less than another priority.
         """
 
-        return self.group_priority < other.group_priority or (self.group_priority == other.group_priority and self.internal_priority < other.internal_priority)
+        return self.group_priority > other.group_priority or (self.group_priority == other.group_priority and self.internal_priority > other.internal_priority)
 
 class APIMethods:
 

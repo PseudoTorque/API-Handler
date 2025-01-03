@@ -55,7 +55,14 @@ if __name__ == "__main__":
             count = 0
             while count < c:
                 time.sleep(0.1)
+
+                if socket.getblocking():
+                    socket.setblocking(False)
+
                 result = decode_object(socket)
+                
+                if result is None or not result:
+                    continue
                 
                 if isinstance(result, Details):
                     result = result.state, result.reason, result.instruction
