@@ -18,22 +18,6 @@ class JobQueueEmpty(Exception):
 
         return self.message
 
-class BroadcastQueueEmpty(Exception):
-
-    """
-    An exception to raise when the broadcast queue is empty.
-    """
-
-    def __init__(self, message: str) -> None:
-
-        self.message = message
-
-        super().__init__(self.message)
-
-    def __str__(self) -> str:
-
-        return self.message
-
 class RateLimitsNotDefined(Exception):
 
     """

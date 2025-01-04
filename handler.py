@@ -2,20 +2,19 @@
 All the objects used in the project.
 """
 
-from queue import PriorityQueue, Queue
 from multiprocessing.managers import SyncManager
 
-from utils import ConnectionPool, DillProcess, listener, poller, dispatcher, broadcaster, ConnectionPool, JobQueue, BroadcastQueue
+from utils import DillProcess, JobQueue, ConnectionPool #objects
+from utils import listener, poller, dispatcher #functions (for processes)
 
 class Manager(SyncManager):
     """
     A class to manage the shared objects.
     """
-    pass
+
+    
 
 Manager.register("JobQueue", JobQueue)
-
-Manager.register("BroadcastQueue", BroadcastQueue)
 
 Manager.register("ConnectionPool", ConnectionPool)
 
@@ -32,12 +31,10 @@ class APIHandler:
 
         self.job_queue = self.manager.JobQueue()
 
-        self.broadcast_queue = self.manager.BroadcastQueue()
-
-        self.data = self.manager.dict({"buffer_length":{"pooler":10, "dispatcher":10}, 
-                                             "min_frequency":{"pooler":0.1, "dispatcher":0.1}, 
-                                             "original_frequency":{"pooler":500.0, "dispatcher":10.0},
-                                             "rate_limit":{"upstox":{"default":[10, 50, 100], "current":[0, 0, 0], "last_reset":[0, 0, 0]}}})
+        self.data = self.manager.dict({
+                                        "original_frequency":{"pooler":50000.0, "dispatcher":10.0},
+                                        "rate_limit":{"upstox":{"default":[10, 50, 100], "current":[0, 0, 0], "last_reset":[0, 0, 0]}}
+                                    })
 
         self.host = host
 
@@ -54,12 +51,6 @@ class APIHandler:
         self.dispatcher = DillProcess(target=dispatcher, args=(self.data, self.job_queue, self.connection_pool))
 
         self.dispatcher.start()
-
-        self.broadcaster = DillProcess(target=broadcaster, args=(self.broadcast_queue, self.connection_pool))
-
-        self.broadcaster.start()
-
-        self.broadcaster.join()
 
         self.dispatcher.join()
 

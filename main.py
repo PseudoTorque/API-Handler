@@ -54,6 +54,7 @@ if __name__ == "__main__":
 
             count = 0
             while count < c:
+
                 time.sleep(0.1)
 
                 if socket.getblocking():

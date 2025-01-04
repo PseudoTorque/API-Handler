@@ -1,5 +1,4 @@
 IMPROVE Implement dynamic frequency for pooler, dispatcher and broadcaster
 Implement Statistics
-Implement subscriber crash handling
 Implement alive checks for subscribers
 Make an interface for the client to send job
