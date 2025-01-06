@@ -11,8 +11,10 @@ import dill
 
 from exceptions import JobQueueEmpty, RateLimitsNotDefined #exceptions
 
-from objects import Close, SwitchToBatch, SwitchToStream, Rename, InternalInterrupt, RateLimitExceeded, Signal #signals
-from objects import Priority, APIJob, Dummy, Job #job related objects
+from objects import Signal #signal base class
+from objects import Close, SwitchToBatch, SwitchToStream, Rename #inbound signals
+from objects import InternalInterrupt, RateLimitExceeded #internal signals
+from objects import Priority, APIJob, Dummy #job related objects
 from objects import States, Reasons, Details #states, reasons and details
 
 def reformat_object(obj: any) -> any:
@@ -72,10 +74,6 @@ def decode_object(sock: socket) -> any:
 
     try:
 
-        if sock.getblocking():
-
-            sock.setblocking(False)
-
         header_size = 30
 
         #bytes is a string of bytes that is a pickled object.
@@ -123,7 +121,6 @@ def encode_object(data: any) -> bytes:
 
     return out
 
-#call a sort function on the job queue after rate limits have been available again
 class JobQueue:
 
     """
@@ -133,40 +130,84 @@ class JobQueue:
 
     def __init__(self) -> None:
 
-        self.buffer: list[Job] = []
+        self.buffer: dict[str, list[APIJob|Signal]] = {} #essentially composed of buckets of the jobs for each client, they are seperated by client id
 
-    def get_buffer(self) -> list[Job]:
+    def _pop_from_buffer(self, client_id: str, obj: APIJob|Signal) -> tuple[str, APIJob|Signal]:
+
+        """
+        A function to pop an object from the buffer.
+
+        Args:
+            client_id (str): The client id to pop the object from.
+            obj (APIJob|Signal): The object to pop from the buffer.
+
+        Returns:
+            tuple[str, APIJob|Signal]: The client id and object popped from the buffer.
+        """
+
+        #look the object up in the buffer and pop it
+        for index, other in enumerate(self.buffer[client_id]):
+
+            if other is obj:
+
+                return (client_id, self.buffer[client_id].pop(index))
+
+    def _get_leaders(self) -> list[tuple[str, APIJob|Signal]]:
+
+        """
+        A function to get the leaders of each bucket.
+
+        Returns:
+            list[APIJob|Signal]: The leaders of each bucket aggregated, sorted by priority.
+        """
+
+        unsorted_leaders = [(client_id, bucket[0]) for client_id, bucket in self.buffer.items() if bucket != []]
+
+        return sorted(unsorted_leaders, key=lambda x: x[1], reverse=True)
+
+    def get_buffer(self) -> dict[str, list[APIJob|Signal]]:
 
         """
         A function to get the buffer of the job queue.
 
         Returns:
-            list[Job]: The buffer of the job queue.
+            dict[str, list[Job]]: The buffer of the job queue.
         """
 
         return self.buffer
 
-    def put(self, job: Job) -> None:
+    def put(self, obj: tuple[str, APIJob|Signal]) -> None:
 
         """
         A function to put a job into the job queue based on the priority. 
         The job queue is sorted by priority, the highest priority job is at the start of the list.
 
         Args:
-            job (Job): The job to put into the job queue.
+            obj (tuple[str, APIJob|Signal]): The client id and job or signal to put into the job queue.
         """
 
-        for index, other_job in enumerate(self.buffer):
+        client_id, obj = obj
 
-            if job > other_job:
+        #check if the client id is already in the buffer
+        if client_id not in self.buffer:
 
-                self.buffer.insert(index, job)
+            self.buffer[client_id] = []
+
+        #get the associated bucket for the client id
+        bucket = self.buffer.get(client_id)
+
+        #insert the job or signal into the bucket
+        for index, other in enumerate(bucket):
+
+            if obj > other:
+
+                bucket.insert(index, obj)
 
                 return
             
-        self.buffer.append(job)
+        bucket.append(obj)
 
-    def get(self, block: bool = True) -> Job:
+    def get(self, block: bool = True) -> tuple[str, APIJob|Signal]:
 
         """
         A function to get the job from the job queue.
@@ -175,7 +216,7 @@ class JobQueue:
             block (bool): Whether to block the function until a job is available.
 
         Returns:
-            Job: The job from the job queue.
+            tuple[str, APIJob|Signal]: The client id and job or signal from the job queue.
 
         Raises:
             JobQueueEmpty: If the job queue is empty and the function is not blocking.
@@ -183,33 +224,67 @@ class JobQueue:
 
         if block:
             
-            while self.buffer == []:
+            while self._get_leaders() == []:
 
                 sleep(0.1)
 
-            return self.buffer.pop(0)
+            return self._pop_from_buffer(self._get_leaders()[0][0], self._get_leaders()[0][1])
         
         else:
 
-            if self.buffer == []:
+            if self._get_leaders() == []:
 
                 raise JobQueueEmpty("The job queue is empty")
             
             else:
 
-                return self.buffer.pop(0)
+                return self._pop_from_buffer(self._get_leaders()[0][0], self._get_leaders()[0][1])
 
-    def put_for_cycle(self, job: Job) -> None:
+    def put_for_cycle(self, obj: tuple[str, APIJob|Signal]) -> None:
 
         """
         A function to put a job into the job queue for cycling purposes.
+
+        Args:
+            obj (tuple[str, APIJob|Signal]): The client id and job or signal to put into the job queue.
+        """
+        
+        client_id, obj = obj
+
+        self.buffer[client_id].append(obj)
+
+    def rearrange(self) -> None:
+
+        """
+        A function to rearrange the entire job queue to a sorted state.
         """
 
-        self.buffer.append(job)
+        for client_id, bucket in self.buffer.items():
 
-    def sort(self) -> None:
+            self.buffer[client_id] = sorted(bucket, reverse=True)
 
-        self.buffer = sorted(self.buffer, reverse=True)
+    def deallocate(self, client_id: str) -> None:
+
+        """
+        A function to deallocate a client from the job queue.
+
+        Args:
+            client_id (str): The client id to deallocate.
+        """
+
+        self.buffer.pop(client_id)
+
+    def rename(self, client_id: str, new_name: str) -> None:
+
+        """
+        A function to rename a client in the job queue.
+
+        Args:
+            client_id (str): The client id to rename.
+            new_name (str): The new name to rename to.
+        """
+
+        self.buffer[new_name] = self.buffer.pop(client_id)
 
 class ClientSocket:
 
@@ -231,6 +306,8 @@ class ClientSocket:
 
         self.client_id: str = client_id
 
+        self.locked = False
+
     def send(self, data: any) -> None:
 
         """
@@ -240,7 +317,13 @@ class ClientSocket:
             data (any): The data to send through the socket.
         """
 
-        self.connection.send(encode_object(data))
+        try:
+
+            self.connection.send(encode_object(data))
+
+        except error as e:
+
+            pass
 
     def recv(self) -> any:
 
@@ -251,7 +334,29 @@ class ClientSocket:
             any: The data received from the client socket.
         """
 
+        self.ensure_non_blocking()
+
         return decode_object(self.connection)
+
+    def ensure_non_blocking(self) -> None:
+
+        """
+        A function to ensure the socket is non-blocking.
+        """
+
+        if self.connection.getblocking():
+
+            self.connection.setblocking(False)
+
+    def ensure_blocking(self) -> None:
+
+        """
+        A function to ensure the socket is blocking.
+        """
+
+        if not self.connection.getblocking():
+
+            self.connection.setblocking(True)
 
 class ConnectionPool:
 
@@ -325,6 +430,10 @@ class ConnectionPool:
 
             if i.client_id == client_id:
                 
+                while i.locked and cycle(1):
+
+                    pass
+
                 return self.pool.pop(index)
         
         return None
@@ -350,7 +459,7 @@ class ConnectionPool:
     def rename_client_socket(self, client_id: str, new_client_id: str) -> None:
 
         """
-        A function to rename a client socket in the connection pool.
+        A function to rename a client socket in the connection pool. send a callback to the client with confirmation as well.
 
         Args:
             client_id (str): The client id to rename.
@@ -358,6 +467,11 @@ class ConnectionPool:
         """
 
         target = self.get_client_socket(client_id)
+
+        print("renaming", target.client_id, "to", new_client_id, "target locked:", target.locked)
+        while target.locked and cycle(1):
+
+            pass
 
         target.client_id = new_client_id
 
@@ -371,6 +485,48 @@ class ConnectionPool:
         """
 
         self.pop_client_socket(client_id)
+
+    def dontcare_send(self, client_id: str, message: any) -> None:
+
+        """
+        A function to send a message to a client without caring about whether the client is closed or not.
+
+        Args:
+            client_id (str): The client id to send the message to.
+            message (any): The message to send to the client.
+        """
+
+        self.notify(client_id, message)
+
+    def notify(self, client_id: str, message: Details) -> None:
+
+        """
+        A function to notify the client of a status. 
+        If the client is closed, the message is not sent.
+
+        Args:
+            client_id (str): The client id to notify.
+            message (Details): The message to notify the client with.
+        """
+
+        target = self.get_client_socket(client_id)
+
+        if target is None:
+
+            return
+
+        target.locked = True
+
+        try:
+
+            target.send(message)
+
+        except:
+
+            pass
+
+        print(message, target.client_id, "notified")
+        target.locked = False
 
     def poll(self, job_queue: JobQueue) -> None:
 
@@ -392,7 +548,7 @@ class ConnectionPool:
 
                 if data:
 
-                    job_queue.put(Job(reformat_object(data), client_socket.client_id))
+                    job_queue.put((client_socket.client_id, reformat_object(data)))
 
                     #debugging
                     print("jp: " + str(data.priority.group_priority * 10 + data.priority.internal_priority) + " cid: " + str(client_socket.client_id))
@@ -401,7 +557,8 @@ class ConnectionPool:
 
             #Clients have been closed gracefully, may send an update to the supervisor process as well
 
-            job_queue.put(Job(Close(), client_id)) #just in case the client close was not propagated to the dispatcher (ungraceful)
+            job_queue.put((client_id, Close(False))) #just in case the client close was not propagated to the dispatcher (ungraceful)
+
             self.close_client_socket(client_id)
 
 class ServerSocket:
@@ -525,28 +682,26 @@ def worker_process(read_end: any, connection_pool: ConnectionPool) -> None:
 
         try:
 
-            job = read_end.recv()
+            client_id, job = read_end.recv()
 
         except EOFError:
 
             break
 
-        check = job.job
-
         #decision tree here
-        if isinstance(check, Signal):
+        if isinstance(job, Signal):
 
-            if isinstance(check, InternalInterrupt):
+            if isinstance(job, InternalInterrupt):
 
                 break
             
-            if isinstance(check, RateLimitExceeded):
+            if isinstance(job, RateLimitExceeded):
 
-                reason = Reasons.hour_rate_limit_exceeded if job.job.hour else Reasons.minute_rate_limit_exceeded if job.job.minute else Reasons.second_rate_limit_exceeded
+                reason = Reasons.hour_rate_limit_exceeded if job.hour else Reasons.minute_rate_limit_exceeded if job.minute else Reasons.second_rate_limit_exceeded
 
                 details = Details(States.rate_limit_exceeded, reason, None) #send instructions to the client here
 
-                connection_pool.get_client_socket(job.client_id).send(details)
+                connection_pool.dontcare_send(client_id, details)
       
             #other signal cases here
 
@@ -554,9 +709,9 @@ def worker_process(read_end: any, connection_pool: ConnectionPool) -> None:
 
 
 
-            result = job.job.call()
+            result = job.call()
 
-            connection_pool.get_client_socket(job.client_id).send(result)
+            connection_pool.dontcare_send(client_id, result)
 
             print(result)
 
@@ -593,16 +748,16 @@ class BatchWorker:
 
             self.pool.append(Worker(self.client_id, self.connection_pool))
 
-    def process(self, job: Job) -> None:
+    def process(self, obj: tuple[str, any]) -> None:
 
         """
         A function to dispatch the job to some worker in the batch worker.
 
         Args:
-            job (Job): The job to process.
+            obj (tuple[str, any]): The client id and object to process.
         """
 
-        self.pool[self.job_count % len(self.pool)].process(job)
+        self.pool[self.job_count % len(self.pool)].process(obj)
 
         self.job_count += 1
 
@@ -673,6 +828,19 @@ class BatchWorker:
 
             worker.rename_connection(new_client_id, propagate=False)
 
+    def notify(self, message: Details) -> None:
+
+        """
+        A function to notify the target directly of a status.
+
+        Args:
+            message (Details): The message to notify the target with.
+        """
+
+        target = self.pool[0]
+
+        target.notify(message)
+
 class Worker:
 
     """
@@ -703,17 +871,17 @@ class Worker:
 
         self.is_alive = True
 
-    def process(self, job: Job) -> None:
+    def process(self, obj: tuple[str, any]) -> None:
 
         """
         A function to dispatch the job to the worker, sends the job to the worker's target
         through the write end of the pipe associated with it.
 
         Args:
-            job (Job): The job to dispatch.
+            obj (tuple[str, any]): The client id and object to dispatch.
         """
 
-        self.write_end.send(job)
+        self.write_end.send(obj)
 
     def cleanup(self) -> bool:
 
@@ -747,10 +915,10 @@ class Worker:
         """
         A function to silently interrupt the worker, sets the client id to None and silently interrupts the worker.
         """
-
+    
         self.client_id = None
 
-        self.process(Job(InternalInterrupt(), self.client_id))
+        self.process((None, InternalInterrupt()))
 
         self.write_end.close()
 
@@ -782,6 +950,17 @@ class Worker:
             self.connection_pool.rename_client_socket(self.client_id, new_client_id)
 
         self.client_id = new_client_id
+
+    def notify(self, message: Details) -> None:
+
+        """
+        A function to notify the target directly of a status.
+
+        Args:
+            message (Details): The message to notify the target with.
+        """
+
+        self.connection_pool.notify(self.client_id, message)
 
 class WorkerPool:
 
@@ -916,6 +1095,26 @@ class WorkerPool:
 
             worker.rename_connection(new_client_id)
 
+    def notify(self, client_id: str, message: Details) -> None:
+
+        """
+        A function to notify the client of a status
+        """
+
+        worker = self.find_worker(client_id)
+
+        if worker is not None:
+
+            worker.notify(message)
+
+    def is_rename_possible(self, new_client_id: str) -> bool:
+
+        """
+        A function to check if the rename is possible.
+        """
+
+        return self.find_worker(new_client_id) is None
+
     def cleanup(self) -> None:
 
         """
@@ -936,21 +1135,23 @@ class WorkerPool:
 
         self.pool = [worker for index, worker in enumerate(self.pool) if index not in to_remove]
 
-    def process(self, job: Job) -> None:
+    def process(self, obj: tuple[str, any]) -> None:
 
         """
         A function to process the job, finds the worker associated with the job's client id and 
         processes the job through the worker.
 
         Args:
-            job (Job): The job to process.
+            obj (tuple[str, any]): The client id and object to process.
         """
 
-        worker = self.find_worker(job.client_id)
+        client_id, _ = obj
+
+        worker = self.find_worker(client_id)
 
         if worker is not None:
 
-            worker.process(job)
+            worker.process(obj)
 
     def cleanup_cycle(self) -> None:
 
@@ -1005,7 +1206,7 @@ class Dispatcher:
 
         self.history: dict[str, list[str|float]] = {}
 
-        self.current_job: Job = None
+        self.current_job: tuple[str, any] = None
 
         self.current_key: str = None
 
@@ -1053,16 +1254,16 @@ class Dispatcher:
 
         self.history[new_client_id] = self.history.pop(client_id)
 
-    def set_current_job(self, job: Job) -> None:
+    def set_current_job(self, obj: tuple[str, any]) -> None:
 
         """
         A function to set the current job.
 
         Args:
-            job (Job): The job to set the current job to.
+            obj (tuple[str, any]): The client id and object to set the current job to.
         """
 
-        self.current_job = job
+        self.current_job = obj
 
     def set_rate_limit_key(self) -> None:
 
@@ -1076,13 +1277,13 @@ class Dispatcher:
 
         for key in self.keys:
 
-            if key in self.current_job.job.url:
+            if key in self.current_job[1].url:
 
                 self.current_key = key
 
                 return
 
-        raise RateLimitsNotDefined(self.current_job.url)
+        raise RateLimitsNotDefined(self.current_job[1].url)
 
     def is_rate_limit_reached(self) -> None:
 
@@ -1160,65 +1361,98 @@ class Dispatcher:
         if second_exceed:
 
             print("second")
-            condition = self.history[self.current_job.client_id][0] == "second" and time() - self.history[self.current_job.client_id][1] <= 1   
+            condition = self.history[self.current_job[0]][0] == "second" and time() - self.history[self.current_job[0]][1] <= 1   
 
         if minute_exceed:
 
             print("minute")
-            condition = self.history[self.current_job.client_id][0] == "minute" and time() - self.history[self.current_job.client_id][1] <= 60 
+            condition = self.history[self.current_job[0]][0] == "minute" and time() - self.history[self.current_job[0]][1] <= 60 
 
         if hour_exceed:
 
             print("hour")
-            condition = self.history[self.current_job.client_id][0] == "hour" and time() - self.history[self.current_job.client_id][1] <= 3600
+            condition = self.history[self.current_job[0]][0] == "hour" and time() - self.history[self.current_job[0]][1] <= 3600
 
         if not condition:
 
             #set the last time a rate limit warning was sent to the client
-            self.history[self.current_job.client_id][1] = time()
+            self.history[self.current_job[0]][1] = time()
 
-            self.history[self.current_job.client_id][0] = "hour" if hour_exceed else "minute" if minute_exceed else "second"
+            self.history[self.current_job[0]][0] = "hour" if hour_exceed else "minute" if minute_exceed else "second"
 
-            print(self.history[self.current_job.client_id])
+            print(self.history[self.current_job[0]])
 
-            self.worker_pool.process(Job(RateLimitExceeded(self.current_exceed_status), self.current_job.client_id))
+            self.worker_pool.process((self.current_job[0], RateLimitExceeded(self.current_exceed_status)))
 
-    def handle_job(self, job: Job) -> None:
+    def handle_job(self, obj: tuple[str, any]) -> None:
 
         """
         A function to handle the job.
 
         Args:
-            job (Job): The job to handle.
+            obj (tuple[str, any]): The client id and object to handle.
         """
 
-        self.set_current_job(job)
+        self.set_current_job(obj)
 
-        check = self.current_job.job
+        check = self.current_job[1]
 
-        client_id = self.current_job.client_id
+        client_id = self.current_job[0]
 
         if isinstance(check, Signal):
 
             if isinstance(check, Close):
 
+                if check.graceful:
+
+                    self.worker_pool.notify(client_id, Details(States.closed_connection, Reasons.client_sent_close_packet, None))
+
                 self.worker_pool.close_connection(client_id)
 
                 self.deallocate(client_id)
 
+                self.job_queue.deallocate(client_id)
+
             elif isinstance(check, SwitchToBatch):
 
-                self.worker_pool.switch_to_batch(check.num_processes, client_id)
+                try:
+
+                    self.worker_pool.switch_to_batch(check.num_processes, client_id)
+
+                    self.worker_pool.notify(client_id, Details(States.switched_to_batch, Reasons.client_sent_switch_to_batch_packet, None))
+
+                except:
+
+                    self.worker_pool.notify(client_id, Details(States.switch_to_batch_failed, Reasons.client_sent_switch_to_batch_packet, None)) #Enter custom reason here
 
             elif isinstance(check, SwitchToStream):
 
-                self.worker_pool.switch_to_stream(client_id)
+                try:
+
+                    self.worker_pool.switch_to_stream(client_id)
+
+                    self.worker_pool.notify(client_id, Details(States.switched_to_stream, Reasons.client_sent_switch_to_stream_packet, None))
+
+                except:
+
+                    self.worker_pool.notify(client_id, Details(States.switch_to_stream_failed, Reasons.client_sent_switch_to_stream_packet, None)) #Enter custom reason here
             
             elif isinstance(check, Rename):
+                
+                print("rename request received")
+                if self.worker_pool.is_rename_possible(check.new_name):
 
-                self.worker_pool.rename_connection(client_id, check.new_name)
+                    self.worker_pool.notify(client_id, Details(States.renamed_connection, Reasons.client_sent_rename_packet, None))
 
-                self.rename(client_id, check.new_name)
+                    self.job_queue.rename(client_id, check.new_name)
+
+                    self.worker_pool.rename_connection(client_id, check.new_name)
+
+                    self.rename(client_id, check.new_name)
+                
+                else:
+
+                    self.worker_pool.notify(client_id, Details(States.rename_connection_failed, Reasons.name_already_exists, None))
 
         else:
 
@@ -1236,12 +1470,14 @@ class Dispatcher:
                 
                 if prior:
 
-                    self.job_queue.sort()
+                    self.job_queue.rearrange()
 
                 self.proceed()
 
                 print("proceeding")
                 self.worker_pool.process(self.current_job)
+
+                self.job_count += 1
 
             else:
 
@@ -1261,28 +1497,26 @@ class Dispatcher:
 
             try:
 
-                job: Job = self.job_queue.get(block=False)
+                obj: tuple[str, APIJob|Signal] = self.job_queue.get(block=False)
 
             except JobQueueEmpty:
 
                 continue
             
             #allocate a process to the client if it is not already allocated (default is STREAM mode)
-            if self.worker_pool.find_worker(job.client_id) is None:
+            if self.worker_pool.find_worker(obj[0]) is None:
 
-                self.worker_pool.allocate_worker(job.client_id, 1)
+                self.worker_pool.allocate_worker(obj[0], 1)
 
-                if job.client_id not in self.history:
+                if obj[0] not in self.history:
 
-                    self.allocate(job.client_id)
+                    self.allocate(obj[0])
 
-            print("got job", job.job.__dict__.get('priority').__dict__)
+            print("got job", obj[1].__dict__.get('priority').__dict__)
 
-            self.handle_job(job)
+            self.handle_job(obj)
 
             print("handled job")
-
-            self.job_count += 1
 
             print(self.current, self.current_exceed_status)
 

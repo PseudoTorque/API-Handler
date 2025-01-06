@@ -12,8 +12,6 @@ class Manager(SyncManager):
     A class to manage the shared objects.
     """
 
-    
-
 Manager.register("JobQueue", JobQueue)
 
 Manager.register("ConnectionPool", ConnectionPool)
@@ -33,7 +31,8 @@ class APIHandler:
 
         self.data = self.manager.dict({
                                         "original_frequency":{"pooler":50000.0, "dispatcher":10.0},
-                                        "rate_limit":{"upstox":{"default":[10, 50, 100], "current":[0, 0, 0], "last_reset":[0, 0, 0]}}
+                                        "rate_limit":{"upstox":{"default":[10, 50, 100], "current":[0, 0, 0], "last_reset":[0, 0, 0]}},
+                                        "access_tokens":{"upstox":None}
                                     })
 
         self.host = host

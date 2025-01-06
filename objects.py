@@ -103,13 +103,7 @@ class Signal:
         Check if the signal is less than another signal/job based on the priority, required for PriorityQueue which returns min element.
         """
 
-        if isinstance(other, Job):
-
-            return self.priority < other.job.priority
-        
-        elif isinstance(other, Signal):
-
-            return self.priority < other.priority
+        return self.priority < other.priority
 
 class Close(Signal):
 
@@ -117,9 +111,11 @@ class Close(Signal):
     A class to represent the close signal.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, graceful: bool = True) -> None:
 
         super().__init__("CLOSE", Priority(9, 9))
+
+        self.graceful = graceful
 
 class SwitchToBatch(Signal):
 
@@ -151,7 +147,7 @@ class Rename(Signal):
 
     def __init__(self, new_name: str) -> None:
 
-        super().__init__("RENAME", Priority(0, 0))
+        super().__init__("RENAME", Priority(9, 9))
 
         self.new_name = new_name
 
@@ -248,44 +244,14 @@ class APIJob:
         """
 
         return (self.id, request(method=self.method, url=self.url, timeout=self.timeout, headers=self.headers, data=self.payload))
-
-class Job:
-
-    """
-    A class to represent the job object.
-    """
-
-    def __init__(self, job: any, client_id: int) -> None:
-
-        self.job = job
-
-        self.client_id = client_id
-
+    
     def __lt__(self, other) -> bool:
 
         """
         Check if the job is less than another job/signal based on the priority, required for PriorityQueue which returns min element.
         """
 
-        if isinstance(other, Job):
-
-            return self.job.priority < other.job.priority
-        
-        elif isinstance(other, Signal):
-
-            return self.job.priority < other.priority
-        
-class Result:
-
-    """
-    A class to represent the result of a job.
-    """
-
-    def __init__(self, result: any, client_id: int) -> None:
-
-        self.result = result
-
-        self.client_id = client_id
+        return self.priority < other.priority
 
 class States:
 
@@ -296,6 +262,16 @@ class States:
     closed_connection = "CLOSED_CONNECTION"
 
     renamed_connection = "RENAMED_CONNECTION"
+
+    rename_connection_failed = "RENAME_CONNECTION_FAILED"
+
+    switched_to_batch = "SWITCHED_TO_BATCH"
+
+    switched_to_stream = "SWITCHED_TO_STREAM"
+
+    switch_to_batch_failed = "SWITCH_TO_BATCH_FAILED"
+
+    switch_to_stream_failed = "SWITCH_TO_STREAM_FAILED"
 
     rate_limit_exceeded = "RATE_LIMIT_EXCEEDED"
 
@@ -308,6 +284,12 @@ class Reasons:
     client_sent_close_packet = "CLIENT_SENT_CLOSE_PACKET"
 
     client_sent_rename_packet = "CLIENT_SENT_RENAME_PACKET"
+
+    name_already_exists = "NAME_ALREADY_EXISTS"
+
+    client_sent_switch_to_batch_packet = "CLIENT_SENT_SWITCH_TO_BATCH_PACKET"
+
+    client_sent_switch_to_stream_packet = "CLIENT_SENT_SWITCH_TO_STREAM_PACKET"
 
     second_rate_limit_exceeded = "SECOND_RATE_LIMIT_EXCEEDED"
 
@@ -336,31 +318,18 @@ class Details:
         self.reason = reason
 
         self.instruction = instruction
-
-class Status:
-    
-    """
-    A class to represent a status.
-    """
-
-    def __init__(self, details: Details, client_id: int) -> None:
-        
-        self.details = details
-
-        self.client_id = client_id
-
 #dummy testing class
 class Dummy:
     """
     A class to represent the API call (the job object). Processes will send objects of this class to be processed by the APIHandler.
     """
     url = "upstox"
-    def __init__(self, payload: str, priority: Priority) -> None:
+    def __init__(self, payload: str, priority: Priority, id: int = None) -> None:
 
         """
         Initialize the API job.
         """
-        
+        self.id = id
         self.payload = payload
         self.priority = priority
 
@@ -370,4 +339,12 @@ class Dummy:
         Make the API call through the requests library and return the response.
         """
         time.sleep(0.1)
-        return "gp: " + str(self.priority.group_priority) + " ip: " + str(self.priority.internal_priority)
+        return (self.id, "gp: " + str(self.priority.group_priority) + " ip: " + str(self.priority.internal_priority))
+    
+    def __lt__(self, other) -> bool:
+
+        """
+        Check if the job is less than another job/signal based on the priority, required for PriorityQueue which returns min element.
+        """
+
+        return self.priority < other.priority
